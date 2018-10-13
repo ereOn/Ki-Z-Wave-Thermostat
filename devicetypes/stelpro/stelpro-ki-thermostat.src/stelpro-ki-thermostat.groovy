@@ -20,7 +20,7 @@
 preferences {
 	input("heatdetails", "enum", title: "Do you want a detailed operating state notification?", options: ["No", "Yes"], defaultValue: "No", required: true, displayDuringSetup: true)
     input("zipcode", "text", title: "ZipCode (Outdoor Temperature)", description: "[Do not use space](Blank = No Forecast)")
-    
+
 }
 
 metadata {
@@ -93,7 +93,7 @@ metadata {
         standardTile("refresh", "device.refresh", decoration: "flat", width: 2, height: 2) {
             state "default", action:"refresh.refresh", icon:"st.secondary.refresh"
         }
-        
+
         main ("thermostatMulti")
         details(["thermostatMulti", "mode", "heatingSetpoint", "refresh"])
     }
@@ -152,9 +152,9 @@ def updateWeather() {
             log.debug( "Something went wrong, no data found." )
             return false
         }
-        
+
         def tempToSend
-        
+
         if(getTemperatureScale() == "C" ) {
         	tempToSend = weather.current_observation.temp_c
             log.debug( "Outdoor Temperature: ${tempToSend} C" )
@@ -224,9 +224,9 @@ def zwaveEvent(physicalgraph.zwave.commands.sensormultilevelv3.SensorMultilevelR
         map.value = convertTemperatureIfNeeded(cmd.scaledSensorValue, cmd.scale == 1 ? "F" : "C", cmd.precision)
         map.unit = getTemperatureScale()
         map.name = "temperature"
-        
+
         temp = map.value
-        if (temp == "32765") {			//0x7FFD 
+        if (temp == "32765") {			//0x7FFD
             map.value = "low"
         }
         else if (temp == "32767") {		//0x7FFF
@@ -261,11 +261,11 @@ def zwaveEvent(physicalgraph.zwave.commands.thermostatoperatingstatev1.Thermosta
         break
     }
     map.name = "thermostatOperatingState"
-    
+
     if (settings.heatdetails == "No") {
     	map.displayed = false
     }
-    
+
     map
 }
 
@@ -276,7 +276,7 @@ def zwaveEvent(physicalgraph.zwave.commands.thermostatmodev2.ThermostatModeRepor
 		case physicalgraph.zwave.commands.thermostatmodev2.ThermostatModeReport.MODE_HEAT:
             map.value = "heat"
             break
-        
+
 		//Eco mode
 		case '11':
             map.value = "eco"
@@ -337,7 +337,7 @@ def setHeatingSetpoint(preciseDegrees, delay = 0) {
     else {
         convertedDegrees = degrees
     }
-	
+
 	sendEvent(name: "heatingSetpoint", value: degrees, unit: locationScale)
     sendEvent(name: "thermostatSetpoint", value: degrees, unit: locationScale)
 
@@ -443,35 +443,27 @@ def setCoolingSetpoint(coolingSetpoint) {
 }
 
 def heat() {
-	log.trace "heat mode applied"
-	delayBetween([
-		zwave.thermostatModeV2.thermostatModeSet(mode: 1).format(),
-		zwave.thermostatModeV2.thermostatModeGet().format()
-	], 1000)
+    setThermostatMode("heat")
 }
 
 def eco() {
-	log.trace "eco mode applied"
-	delayBetween([
-		zwave.thermostatModeV2.thermostatModeSet(mode: 11).format(),
-		zwave.thermostatModeV2.thermostatModeGet().format()
-	], 1000)
+    setThermostatMode("eco")
 }
 
 def off() {
-    log.trace "${device.displayName} does not support off mode"
+    setThermostatMode("off")
 }
 
 def auto() {
-    log.trace "${device.displayName} does not support auto mode"
+    setThermostatMode("auto")
 }
 
 def emergencyHeat() {
-    log.trace "${device.displayName} does not support emergency heat mode"
+    setThermostatMode("emergency heat")
 }
 
 def cool() {
-    log.trace "${device.displayName} does not support cool mode"
+    setThermostatMode("cool")
 }
 
 def setCustomThermostatMode(mode) {
@@ -479,10 +471,62 @@ def setCustomThermostatMode(mode) {
 }
 
 def setThermostatMode(String value) {
-	delayBetween([
-		zwave.thermostatModeV2.thermostatModeSet(mode: modeMap[value]).format(),
-		zwave.thermostatModeV2.thermostatModeGet().format()
-	], 1000)
+	log.debug "${device.displayName} setting thermostat mode to ${value}"
+
+    if (value != "off" && state.isOff) {
+        log.info "${device.displayName} was off: restoring the previous temperature of ${state.lastHeatingSetpoint}"
+    	quickSetHeat(state.lastHeatingSetpoint)
+        state.isOff = false
+    }
+
+    if (modes().contains(value)) {
+        delayBetween([
+            zwave.thermostatModeV2.thermostatModeSet(mode: modeMap[value]).format(),
+            zwave.thermostatModeV2.thermostatModeGet().format()
+        ], 1000)
+
+        return
+    }
+
+    switch (value) {
+    	case "eco":
+        	// We should never get here.
+            break
+        case "off":
+            if (state.isOff) {
+                log.debug "${device.displayName} is already off"
+                return
+            }
+
+			state.isOff = true
+            state.lastHeatingSetpoint = device.currentValue("heatingSetpoint")
+
+			log.info "${device.displayName} does not have an off mode: storing the current temperature of ${state.lastHeatingSetpoint}"
+
+			// The thermostat does not support "off" so we set the desired temperature to 0 degrees Celcius instead.
+            quickSetHeat(0)
+
+            break
+        case "rushHour":
+            break
+        case "heat":
+            // We should never get here.
+            break
+        case "emergency heat":
+            log.info "${device.displayName} does not support emergency heat mode: falling back to regular heat mode"
+            heat()
+            break
+        case "auto":
+        	log.info "${device.displayName} does not support auto mode"
+            break
+        case "cool":
+            log.info "${device.displayName} does not support cool mode: falling back to eco mode"
+            eco()
+            break
+        default:
+            log.debug("${device.displayName} cannot switch to unknown thermostat mode ${value}")
+            break
+    }
 }
 
 def fanOn() {
